@@ -1,0 +1,3 @@
+# Only needed for live capture from the Arduino (decoder --port, tools/check.py).
+# decoder --selftest and --replay run with the Python standard library alone.
+pyserial>=3.5

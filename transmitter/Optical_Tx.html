@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Optical Tx — Optical Data Transfer Concept</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #000; }
+  #patch { position: fixed; inset: 0; background: #000; z-index: 0; }
+  #ui {
+    position: fixed; inset: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: center;
+    background: #0c0d10; color: #d7dbe2;
+    font: 15px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+    padding: 24px; box-sizing: border-box; overflow: auto;
+  }
+  #ui.hidden { display: none; }
+  .card { width: 100%; max-width: 560px; }
+  h1 { font-size: 16px; margin: 0 0 4px; color: #fff; letter-spacing: .3px; }
+  .sub { color: #8b93a1; margin: 0 0 18px; font-size: 12.5px; }
+  label { display: block; margin: 14px 0 5px; color: #aeb6c2; font-size: 12.5px; }
+  textarea, input[type=number], input[type=file] {
+    width: 100%; box-sizing: border-box; background: #16181d; color: #e7eaf0;
+    border: 1px solid #2a2e37; border-radius: 6px; padding: 9px 10px; font: inherit;
+  }
+  input[type=file] { padding: 7px 10px; }
+  textarea { height: 60px; resize: vertical; }
+  textarea:disabled { opacity: .4; }
+  .row { display: flex; gap: 14px; }
+  .row > div { flex: 1; }
+  .opts { display: flex; align-items: center; gap: 8px; margin-top: 12px; color: #aeb6c2; }
+  .filebar { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+  .filebar #clearFile { flex: 0 0 auto; width: auto; margin: 0; padding: 7px 12px; background: #2a2e37; }
+  .filebar #clearFile:hover { background: #3a4150; }
+  #fileMode { margin-top: 8px; font-size: 12px; color: #8b93a1; }
+
+  /* ETA hero */
+  .eta {
+    margin-top: 18px; padding: 14px 16px; border-radius: 8px;
+    background: #0e1a12; border: 1px solid #1f4a2c;
+  }
+  .eta .k { font-size: 11.5px; letter-spacing: .4px; text-transform: uppercase; color: #7fce93; }
+  .eta .big { font-size: 30px; font-weight: 700; color: #eafff0; margin: 2px 0 2px; }
+  .eta .line { font-size: 12.5px; color: #9aa3b1; }
+  .eta .line b { color: #d7dbe2; font-weight: 600; }
+  .eta.warnbox { background: #241a0e; border-color: #5a3f1f; }
+  .eta.warnbox .k { color: #ffb454; }
+  .warn { color: #ffb454; }
+
+  button {
+    margin-top: 18px; width: 100%; padding: 11px; background: #2f6bff; color: #fff;
+    border: 0; border-radius: 6px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button:hover { background: #2559da; }
+  kbd { background: #22262f; border: 1px solid #333; border-radius: 4px; padding: 1px 5px; font-size: 11px; color: #cfd5df; }
+  .keys { margin-top: 14px; color: #6f7787; font-size: 11.5px; }
+</style>
+</head>
+<body>
+  <div id="patch"></div>
+
+  <div id="ui">
+    <div class="card">
+      <h1>Optical transmitter — screen patch</h1>
+      <p class="sub">Start the decoder first. Max brightness, auto-brightness and night-light features off, on AC power. Keep the tab fullscreen &amp; focused (animation throttles otherwise).</p>
+
+      <label for="msg">Message (text mode)</label>
+      <textarea id="msg" spellcheck="false">HELLO OPTICAL WORLD</textarea>
+
+      <label for="file">…or send a file (file mode)</label>
+      <input id="file" type="file">
+      <div class="filebar">
+        <button id="clearFile" type="button">Clear file</button>
+        <span id="fileMode">No file selected — sending text.</span>
+      </div>
+
+      <div class="row">
+        <div>
+          <label for="spf">Frames / symbol</label>
+          <input id="spf" type="number" min="1" max="60" step="1" value="2">
+        </div>
+        <div>
+          <label for="gap">Inter-frame gap (black frames, rounded up to whole bits)</label>
+          <input id="gap" type="number" min="0" max="240" step="1" value="24">
+        </div>
+      </div>
+
+      <div class="opts">
+        <input id="loop" type="checkbox" checked>
+        <label for="loop" style="margin:0">Loop continuously</label>
+      </div>
+
+      <div class="eta" id="eta">
+        <div class="k">Estimated transmit time</div>
+        <div class="big" id="etaBig">—</div>
+        <div class="line" id="etaLine"></div>
+      </div>
+
+      <button id="start">Go fullscreen &amp; transmit</button>
+      <div class="keys"><kbd>Space</kbd> start / stop &nbsp;·&nbsp; <kbd>F</kbd> fullscreen &nbsp;·&nbsp; <kbd>Esc</kbd> stop &amp; exit</div>
+    </div>
+  </div>
+
+<script>
+// FRAME CONTRACT — identical to decoder/optical_rx.py (see docs/PROTOCOL.md):
+//   preamble 16 alternating bits (start 1) | sync 0x7E | type(1) | length(2 BE)
+//   | payload | CRC-8(poly 0x07) over [type,len_hi,len_lo,payload]
+//   Manchester (whole frame): logical 1 -> [WHITE,BLACK], 0 -> [BLACK,WHITE]
+//   each symbol shown SPF refresh frames; bitrate = 60/(2*SPF) at 60 Hz.
+//   The inter-frame gap is rounded up to a whole number of bits (2*SPF frames)
+//   so the decoder's bit clock stays in phase from one looped frame to the next.
+const SYNC = 0x7E, WHITE = '#ffffff', BLACK = '#000000';
+const TYPE_TEXT = 0x00, TYPE_BINARY = 0x01;
+const FPS = 60;                       // assumed display refresh
+
+const patch=document.getElementById('patch'), ui=document.getElementById('ui');
+const msgEl=document.getElementById('msg'), fileEl=document.getElementById('file');
+const clearFileBtn=document.getElementById('clearFile'), fileMode=document.getElementById('fileMode');
+const spfEl=document.getElementById('spf'), gapEl=document.getElementById('gap'), loopEl=document.getElementById('loop');
+const etaBox=document.getElementById('eta'), etaBig=document.getElementById('etaBig'), etaLine=document.getElementById('etaLine');
+const startBtn=document.getElementById('start');
+
+let fileBytes=null, fileName='';
+
+function crc8(...groups){let c=0;for(const g of groups)for(const b of g){c^=b;for(let i=0;i<8;i++)c=(c&0x80)?((c<<1)^0x07)&0xFF:(c<<1)&0xFF;}return c;}
+function bitsOfByte(b){const o=[];for(let i=7;i>=0;i--)o.push((b>>i)&1);return o;}
+
+function currentPayload(){
+  if(fileBytes) return {bytes:fileBytes, type:TYPE_BINARY, label:fileName};
+  return {bytes:new TextEncoder().encode(msgEl.value), type:TYPE_TEXT, label:'text'};
+}
+
+function buildSymbols(){
+  const {bytes,type}=currentPayload();
+  const len=bytes.length;
+  const header=[type,(len>>8)&0xFF,len&0xFF];
+  const crc=crc8(header,bytes);
+  const bits=[];
+  for(let i=0;i<16;i++)bits.push(i%2===0?1:0);   // preamble 1010...
+  bits.push(...bitsOfByte(SYNC));
+  for(const h of header)bits.push(...bitsOfByte(h));
+  for(const b of bytes)bits.push(...bitsOfByte(b));
+  bits.push(...bitsOfByte(crc));
+  const s=[];for(const bit of bits) bit?s.push(1,0):s.push(0,1);
+  return s;
+}
+
+// ---- transmit-time estimate ----
+function wholeBitGap(gap,spf){ const bit=2*spf; return Math.ceil(gap/bit)*bit; }
+function fmt(secs){
+  if(secs<60) return secs.toFixed(1)+' s';
+  const m=Math.floor(secs/60), s=Math.round(secs%60);
+  return m+' min '+String(s).padStart(2,'0')+' s';
+}
+function refreshEta(){
+  const spf=Math.max(1,parseInt(spfEl.value)||1);
+  const gap=wholeBitGap(Math.max(0,parseInt(gapEl.value)||0),spf);
+  const {bytes,label}=currentPayload();
+  const n=bytes.length;
+
+  const totalBits = 16 + 8*(n+5);        // preamble + sync+type+len2+payload+crc
+  const symbols   = 2*totalBits;
+  const oneSend   = (symbols*spf)/FPS;   // seconds for a single transmission
+  const cycle     = (symbols*spf + gap)/FPS;
+  const bitrate   = FPS/(2*spf);
+
+  let warn='';
+  if(n>65535) warn=`<span class="warn">payload ${n} B exceeds the 2-byte length field (max 65535)</span>`;
+
+  etaBig.textContent = warn ? '—' : fmt(oneSend);
+  const src = fileBytes ? `file <b>${label}</b>` : 'text';
+  const loopNote = (loopEl.checked && !warn) ? ` · repeats every <b>${fmt(cycle)}</b>` : '';
+  etaLine.innerHTML = warn ? warn
+    : `${src}, <b>${n}</b> bytes at <b>${bitrate.toFixed(1)} bps</b>${loopNote}`
+      + (oneSend>120 ? ` · <span class="warn">long for a live demo — raise the rate or shrink the payload</span>` : '');
+  etaBox.classList.toggle('warnbox', !!warn || oneSend>120);
+}
+[msgEl,spfEl,gapEl].forEach(el=>el.addEventListener('input',refreshEta));
+loopEl.addEventListener('change',refreshEta);
+
+fileEl.addEventListener('change',()=>{
+  const f=fileEl.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=()=>{ fileBytes=new Uint8Array(r.result); fileName=f.name;
+    msgEl.disabled=true; fileMode.textContent=`Sending file: ${fileName}`; refreshEta(); };
+  r.readAsArrayBuffer(f);
+});
+clearFileBtn.addEventListener('click',()=>{
+  fileBytes=null; fileName=''; fileEl.value=''; msgEl.disabled=false;
+  fileMode.textContent='No file selected — sending text.'; refreshEta();
+});
+refreshEta();
+
+// ---- playback ----
+let running=false, symbols=[], spf=2, gap=24, loop=true;
+let symIdx=0, frameInSym=0, gapLeft=0;
+function start(){
+  spf=Math.max(1,parseInt(spfEl.value)||1); gap=wholeBitGap(Math.max(0,parseInt(gapEl.value)||0),spf); loop=loopEl.checked;
+  symbols=buildSymbols(); symIdx=0; frameInSym=0; gapLeft=0; running=true;
+  ui.classList.add('hidden');
+  if(document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(()=>{});
+}
+function stop(){ running=false; patch.style.background=BLACK; ui.classList.remove('hidden'); }
+function tick(){
+  requestAnimationFrame(tick);
+  if(!running) return;
+  if(gapLeft>0){ patch.style.background=BLACK; gapLeft--; return; }
+  patch.style.background = symbols[symIdx]?WHITE:BLACK;
+  if(++frameInSym>=spf){ frameInSym=0;
+    if(++symIdx>=symbols.length){ symIdx=0; if(loop) gapLeft=gap; else stop(); } }
+}
+requestAnimationFrame(tick);
+startBtn.addEventListener('click',start);
+window.addEventListener('keydown',e=>{
+  if(e.code==='Space'){e.preventDefault();running?stop():start();}
+  else if(e.key==='Escape'){if(running)stop();}
+  else if(e.key==='f'||e.key==='F'){if(!document.fullscreenElement&&document.documentElement.requestFullscreen)document.documentElement.requestFullscreen().catch(()=>{});}
+});
+document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement&&running)stop();});
+</script>
+</body>
+</html>
