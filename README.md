@@ -60,6 +60,7 @@ without reflashing the board.
 | [`docs/TESTING.md`](docs/TESTING.md) | Step-by-step build and test guide with checkpoints and troubleshooting |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | Line coding, frame format, CRC-8, rates and airtime, receiver interface |
 | [`docs/LESSONS.md`](docs/LESSONS.md) | The bring-up story: the gotchas actually hit, and their fixes |
+| [`Education/`](Education/README.md) | Teaching guide: 42 topics at high school, bachelor's, and master's level, with labs and quizzes |
 
 ## What you need
 
